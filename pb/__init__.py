@@ -16,7 +16,7 @@ from pb.types import EvolutionUnit, Population
 
 logger = logging.getLogger(__name__)
 
-gsm8k_examples = gsm.read_jsonl('pb/data/gsm.jsonl')
+gsm8k_examples = gsm.read_jsonl('pb/data/vqa.jsonl')
 
 def create_population(tp_set: List, mutator_set: List, problem_description: str) -> Population:
     """samples the mutation_prompts and thinking_styles and returns a 'Population' object.
@@ -41,7 +41,7 @@ def create_population(tp_set: List, mutator_set: List, problem_description: str)
 
     return Population(**data)
 
-def init_run(population: Population, model: Client, num_evals: int):
+def init_run(population: Population, model, num_evals: int):
     """ The first run of the population that consumes the prompt_description and 
     creates the first prompt_tasks.
     
@@ -72,7 +72,7 @@ def init_run(population: Population, model: Client, num_evals: int):
     
     return population
 
-def run_for_n(n: int, population: Population, model: Client, num_evals: int):
+def run_for_n(n: int, population: Population, model, num_evals: int):
     """ Runs the genetic algorithm for n generations.
     """     
     p = population
@@ -85,7 +85,7 @@ def run_for_n(n: int, population: Population, model: Client, num_evals: int):
 
     return p
 
-def _evaluate_fitness(population: Population, model: Client, num_evals: int) -> Population:
+def _evaluate_fitness(population: Population, model, num_evals: int) -> Population:
     """ Evaluates each prompt P on a batch of Q&A samples, and populates the fitness values.
     """
     # need to query each prompt, and extract the answer. hardcoded 4 examples for now.
@@ -99,15 +99,17 @@ def _evaluate_fitness(population: Population, model: Client, num_evals: int) -> 
 
     elite_fitness = -1
     examples = []
+    images = {}
     for unit in population.units:
         # set the fitness to zero from past run.
         unit.fitness = 0
         # todo. model.batch this or multithread
-        examples.append([unit.P + ' \n' + example['question'] for example in batch])
+        examples.append([unit.P + ' \n' + example['question'] + "A: {}\nB: {}\nC: {}\nD: {}".format(example["A"], example["B"], example["C"], example["D"]) for example in batch])
+        images.appen([example["img_path"] for example in batch])
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(examples)) as executor:
-        future_to_fit = {executor.submit(model.batch_generate, example_batch,  temperature=0): example_batch for example_batch in examples}
+        future_to_fit = {executor.submit(model.batch_generate, example_batch, image_path=img,  temperature=0): example_batch for example_batch, img in zip(examples, images)}
         for future in concurrent.futures.as_completed(future_to_fit):
             example_batch = future_to_fit[future]  # Get the prompt corresponding to this future
             try:
@@ -121,7 +123,7 @@ def _evaluate_fitness(population: Population, model: Client, num_evals: int) -> 
     # the LLM before further input Q.
     for unit_index, fitness_results in enumerate(results):
         for i, x in enumerate(fitness_results):
-            valid = re.search(gsm.gsm_extract_answer(batch[i]['answer']), x[0].text)
+            valid = re.search(gsm.gsm_extract_selected(batch[i]['answer']), x[0].text)
             if valid:
                 # 0.25 = 1 / 4 examples
                 population.units[unit_index].fitness += (1 / num_evals)
